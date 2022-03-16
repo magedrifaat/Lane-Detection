@@ -14,7 +14,7 @@ def get_lane_points(img):
     # Find lane edges
     edges = cv2.Canny(img, 200, 300)
     # cv2.imshow("edges", edges)
-    kernel = np.ones([4,1])
+    kernel = np.ones([6,1])
     edges = cv2.dilate(edges, kernel, iterations=1)
     
     # cv2.imshow("edges_dilation", edges)
@@ -110,8 +110,12 @@ def get_midlane_points(img):
 
 cap = cv2.VideoCapture("sim_video.mp4")
 
+paused = False
 while True:
     start = time.time()
+    frame_number = cap.get(cv2.CAP_PROP_POS_FRAMES)
+    if frame_number == cap.get(cv2.CAP_PROP_FRAME_COUNT):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     _, frame = cap.read()
     
     img = frame[:frame.shape[0] - 30,:,:]
@@ -138,8 +142,21 @@ while True:
 
     cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
     
-    if cv2.waitKey(1) == ord('q'):
+    if paused:
+        key = cv2.waitKey()
+    else:
+        key = cv2.waitKey(1)
+
+    if key == ord('q'):
         break
+    elif key == ord('p'):
+        paused = True
+    elif key == ord('r'):
+        paused = False
+    elif key == ord('b') and paused:
+        frame_number = cap.get(cv2.CAP_PROP_POS_FRAMES)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number - 2)
+
     
     print(
         "\n" * 20 + \
