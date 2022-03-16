@@ -53,7 +53,16 @@ def find_clusters(points):
     
     return y
 
-def get_cluster_class(data, labels):
+def get_lane_curves(points, labels):
+    ordered_labels = get_ordered_labels(points, labels)
+    cluster_count = len(set(ordered_labels)) - (1 if -1 in ordered_labels else 0)
+    # Distribute the points into separate arrays
+    lane_lines = [points[np.where(ordered_labels == i)] for i in range(cluster_count)]
+    # Fit a quadratic curve to each array
+    curves = [np.polyfit(line[:, 0], line[:, 1], 2) for line in lane_lines]
+    return curves
+
+def get_ordered_labels(data, labels):
     # Get the number of clusters excluding the noise
     cluster_count = len(set(labels)) - (1 if -1 in labels else 0)
 
@@ -70,12 +79,20 @@ def get_cluster_class(data, labels):
         centres[i] /= counts[i]
     
     # Sort clusters in ascending order of the center value
-    class_to_index = np.zeros((cluster_count,), dtype=np.int)
+    label_to_index = np.zeros((cluster_count,), dtype=np.int)
     indices = np.argwhere(np.ones_like(centres))
     for a, (c, i) in enumerate(sorted(zip(centres, indices))):
-        class_to_index[i] = a
+        label_to_index[i] = a
 
-    return class_to_index
+    # return labels renumbered
+    return np.array([label_to_index[label] if label != -1 else -1 for label in labels])
+
+def draw_curve(img, curve_param, color=(0,0,255)):
+    x = np.array([i for i in range(0, img.shape[0], 10)])
+    y = np.polyval(curve_param, x)
+    for i in range(1, len(x)):
+        cv2.line(img, (int(y[i]), x[i]), (int(y[i - 1]), x[i - 1]), color=color, thickness=3)
+    return img
 
 def get_midlane_points(img):
     edges = cv2.Canny(img, 200, 300)
@@ -103,7 +120,8 @@ while True:
 
     pre_time = time.time()
     labels = find_clusters(points)
-    class_idx = get_cluster_class(points, labels)
+    curves = get_lane_curves(points, labels)
+    labels = get_ordered_labels(points, labels)
 
     fit_time = time.time()
 
@@ -112,11 +130,13 @@ while True:
     for i, p in enumerate(points):
         if labels[i] == -1:
             continue
-        class_index = class_idx[labels[i]]
+        class_index = labels[i]
         cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
-    cv2.imshow("clusters", cluster_img)
+    for i, curve in enumerate(curves):
+        cluster_img = draw_curve(cluster_img, curve, colors[i])
+    cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
 
-    cv2.imshow("img", img)
+    cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
     
     if cv2.waitKey(1) == ord('q'):
         break
