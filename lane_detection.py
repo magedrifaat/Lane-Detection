@@ -53,13 +53,26 @@ def find_clusters(points):
     
     return y
 
-def get_lane_curves(points, labels):
+def get_lane_curves(points, labels, img_shape):
     ordered_labels = get_ordered_labels(points, labels)
     cluster_count = len(set(ordered_labels)) - (1 if -1 in ordered_labels else 0)
     # Distribute the points into separate arrays
     lane_lines = [points[np.where(ordered_labels == i)] for i in range(cluster_count)]
     # Fit a quadratic curve to each array
-    curves = [np.polyfit(line[:, 0], line[:, 1], 2) for line in lane_lines]
+    curves = []
+    for line in lane_lines:
+        params = np.polyfit(line[:, 0], line[:, 1], 2)
+        params2 = np.polyfit(line[:, 0] / 10, line[:, 1] / 10, 2)
+        curve_img = np.zeros((img_shape[0] // 10, img_shape[1] // 10))
+        curve_img = draw_curve(curve_img, params2, 255)
+        count_before = np.sum(np.nonzero(curve_img))
+        points_img = np.zeros((img_shape[0] // 10, img_shape[1] // 10))
+        for point in line:
+            cv2.circle(points_img, (int(point[1]) // 10, int(point[0]) // 10), 3, 255, -1)
+        curve_img = cv2.bitwise_and(cv2.bitwise_not(points_img), curve_img)
+        percent = np.sum(np.nonzero(curve_img)) / (count_before+1)
+        if percent < 0.4:
+            curves.append(params)
     return curves
 
 def get_ordered_labels(data, labels):
@@ -124,7 +137,7 @@ while True:
 
     pre_time = time.time()
     labels = find_clusters(points)
-    curves = get_lane_curves(points, labels)
+    curves = get_lane_curves(points, labels, img.shape)
     labels = get_ordered_labels(points, labels)
 
     fit_time = time.time()
