@@ -107,6 +107,13 @@ def draw_curve(img, curve_param, color=(0,0,255)):
         cv2.line(img, (int(y[i]), x[i]), (int(y[i - 1]), x[i - 1]), color=color, thickness=3)
     return img
 
+def draw_lane(img, curve1, curve2, color=(255, 255, 0)):
+    x = np.array([i for i in range(0, img.shape[0], 10)], dtype=np.int)
+    y1 = np.polyval(curve1, x).astype(np.int)
+    y2 = np.polyval(curve2, x).astype(np.int)
+    points = np.row_stack((np.column_stack((y1, x)), np.column_stack((y2, x))[::-1]))
+    cv2.fillPoly(img, [points], color=color)
+
 def get_midlane_points(img):
     edges = cv2.Canny(img, 200, 300)
     contours = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
@@ -149,8 +156,12 @@ while True:
             continue
         class_index = labels[i]
         cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
-    for i, curve in enumerate(curves):
-        cluster_img = draw_curve(cluster_img, curve, colors[i])
+        
+    # for i, curve in enumerate(curves):
+    #     img = draw_curve(img, curve, colors[i])
+    for i in range(1, len(curves)):
+        draw_lane(img, curves[i - 1], curves[i], colors[i - 1])
+
     cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
 
     cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
