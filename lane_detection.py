@@ -7,6 +7,7 @@ from sklearn.preprocessing import StandardScaler
 import time
 
 SAMPLE_SIZE = 300
+CUTOFF_PERCENT = 0.08
 
 def get_lane_points(img):
     # Resize image to deal with less data
@@ -33,7 +34,7 @@ def find_clusters(points):
     x = StandardScaler().fit_transform(points)
 
     # DBSCAN model to cluster the points
-    model = DBSCAN(eps=0.5)
+    model = DBSCAN(eps=0.7)
     y = model.fit(x).labels_
 
     # Treat any cluster with low count as noise
@@ -41,7 +42,7 @@ def find_clusters(points):
         if label == -1:
             continue
         freq = sum([l == label for l in y])
-        if freq < SAMPLE_SIZE / 10:
+        if freq < SAMPLE_SIZE * CUTOFF_PERCENT:
             y[np.argwhere(y == label)] = -1
     
     # Re-number clusters to fill any gaps
@@ -53,27 +54,63 @@ def find_clusters(points):
     
     return y
 
+def filter_curves(lines, img_shape):
+    curves = []
+    for i, line in enumerate(lines):
+        # fit a straight line to the points
+        params = np.polyfit(line[:, 0], line[:, 1], 1)
+        # fit a curve to the points rescaled by 1/10
+        params2 = np.polyfit(line[:, 0] / 10, line[:, 1] / 10, 2)
+        
+        # draw the curve scaled by 1/10
+        curve_img = np.zeros((img_shape[0] // 10, img_shape[1] // 10))
+        curve_img = draw_curve(curve_img, params2, 255)
+
+        # get a count of the number of pixels of the curve
+        count_before = np.sum(np.nonzero(curve_img))
+        
+        # draw the original line by connecting the points on the same scale
+        points_img = np.zeros((img_shape[0] // 10, img_shape[1] // 10))
+        points_img = draw_curve(points_img, line / 10, 255, thickness=15, point_curve=True)
+
+        # subtract the connected lines from the curve
+        curve_img = cv2.bitwise_and(cv2.bitwise_not(points_img), curve_img)
+
+        # calculate the percent of the remaining pixels from original
+        percent = np.sum(np.nonzero(curve_img)) / (count_before+1)
+        # filter curves with coverage of less than 80%
+        if percent < 0.2:
+            curves.append(params)
+    
+    # Handle the case of 4 clusters at the fork
+    if len(lines) == 4:
+        curves = curves[:2]
+    
+    # Handle the case of high curve third line at the fork
+    if len(curves) == 3:
+        # calculate the slope of the middle and third line
+        mid_curvature = curves[1][0]
+        last_curvature = curves[2][0]
+        # Ignore the third line if its slope is too different form the middle
+        if abs(abs(mid_curvature) - abs(last_curvature)) / abs(mid_curvature) > 3:
+            curves = curves[:2]
+
+    # Recreate the third line by offseting the middle line
+    if len(curves) == 2:
+        shift = 400
+        new_curve = np.copy(curves[-1])
+        new_curve[1] = shift + new_curve[1]
+        curves.append(new_curve)
+
+    return curves
+
 def get_lane_curves(points, labels, img_shape):
     ordered_labels = get_ordered_labels(points, labels)
     cluster_count = len(set(ordered_labels)) - (1 if -1 in ordered_labels else 0)
     # Distribute the points into separate arrays
     lane_lines = [points[np.where(ordered_labels == i)] for i in range(cluster_count)]
-    # Fit a quadratic curve to each array
-    curves = []
-    for line in lane_lines:
-        params = np.polyfit(line[:, 0], line[:, 1], 2)
-        params2 = np.polyfit(line[:, 0] / 10, line[:, 1] / 10, 2)
-        curve_img = np.zeros((img_shape[0] // 10, img_shape[1] // 10))
-        curve_img = draw_curve(curve_img, params2, 255)
-        count_before = np.sum(np.nonzero(curve_img))
-        points_img = np.zeros((img_shape[0] // 10, img_shape[1] // 10))
-        for point in line:
-            cv2.circle(points_img, (int(point[1]) // 10, int(point[0]) // 10), 3, 255, -1)
-        curve_img = cv2.bitwise_and(cv2.bitwise_not(points_img), curve_img)
-        percent = np.sum(np.nonzero(curve_img)) / (count_before+1)
-        if percent < 0.4:
-            curves.append(params)
-    return curves
+    
+    return filter_curves(lane_lines, img_shape)
 
 def get_ordered_labels(data, labels):
     # Get the number of clusters excluding the noise
@@ -100,11 +137,18 @@ def get_ordered_labels(data, labels):
     # return labels renumbered
     return np.array([label_to_index[label] if label != -1 else -1 for label in labels])
 
-def draw_curve(img, curve_param, color=(0,0,255)):
-    x = np.array([i for i in range(0, img.shape[0], 10)])
-    y = np.polyval(curve_param, x)
+def draw_curve(img, curve, color=(0,0,255), thickness=3, point_curve=False):
+    if point_curve:
+        # If points are provided directly
+        x = curve[:, 0].astype(np.int)
+        y = curve[:, 1].astype(np.int)
+    else:
+        # If parameters are provided calculate the points
+        x = np.array([i for i in range(0, img.shape[0], 10)])
+        y = np.polyval(curve, x).astype(np.int)
+
     for i in range(1, len(x)):
-        cv2.line(img, (int(y[i]), x[i]), (int(y[i - 1]), x[i - 1]), color=color, thickness=3)
+        cv2.line(img, (y[i], x[i]), (y[i - 1], x[i - 1]), color=color, thickness=thickness)
     return img
 
 def draw_lane(img, curve1, curve2, color=(255, 255, 0)):
@@ -128,6 +172,27 @@ def get_midlane_points(img):
     
     cv2.drawContours(img, rects, -1, (0,255,0), 2)
 
+def prespective_transform(img, inverse=False):
+    pts1 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
+                       [110, img.shape[0] // 4], [img.shape[1] - 110, img.shape[0] // 4]])
+    pts2 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
+                       [0, 0], [img.shape[1], 0]])
+    
+    # result = img
+    # for pt in pts1:
+    #     cv2.circle(result, (pt[0], pt[1]), 5, (0, 255, 255), thickness=-1)
+
+    if inverse:
+        matrix = cv2.getPerspectiveTransform(pts2, pts1)
+    else:
+        matrix = cv2.getPerspectiveTransform(pts1, pts2)
+
+    # Apply prespective transform and fill background with grey pixels
+    grey_img = np.zeros_like(img)
+    grey_img[:,:,:] = 100
+    result = cv2.warpPerspective(img, matrix, (img.shape[1], img.shape[0]), grey_img, borderMode=cv2.BORDER_TRANSPARENT)
+    return result
+
 cap = cv2.VideoCapture("sim_video.mp4")
 
 paused = False
@@ -139,6 +204,7 @@ while True:
     _, frame = cap.read()
     
     img = frame[:frame.shape[0] - 30,:,:]
+    img = prespective_transform(img)
     
     points = get_lane_points(img)
 
@@ -156,7 +222,7 @@ while True:
             continue
         class_index = labels[i]
         cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
-        
+    
     # for i, curve in enumerate(curves):
     #     img = draw_curve(img, curve, colors[i])
     for i in range(1, len(curves)):
