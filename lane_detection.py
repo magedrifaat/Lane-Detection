@@ -35,24 +35,8 @@ def find_clusters(points):
 
     # DBSCAN model to cluster the points
     model = DBSCAN(eps=0.7)
-    y = model.fit(x).labels_
-
-    # Treat any cluster with low count as noise
-    for label in sorted(set(y)):
-        if label == -1:
-            continue
-        freq = sum([l == label for l in y])
-        if freq < SAMPLE_SIZE * CUTOFF_PERCENT:
-            y[np.argwhere(y == label)] = -1
     
-    # Re-number clusters to fill any gaps
-    labels = set(y)
-    labels.discard(-1)
-    for i, label in enumerate(sorted(labels)):
-        if i != label:
-            y[np.argwhere(y == label)] = i
-    
-    return y
+    return model.fit(x).labels_
 
 def filter_curves(lines, img_shape):
     curves = []
@@ -195,40 +179,64 @@ def prespective_transform(img, inverse=False):
 
 cap = cv2.VideoCapture("sim_video.mp4")
 
+frame_time = 0
+prespective_time = 0
+lane_point_time = 0
+find_cluster_time = 0
+get_curves_time = 0
+draw_lane_time = 0
+display_time = 0
+count = 0
+start_time = time.time()
+
 paused = False
 while True:
-    start = time.time()
+    frame_time -= time.time()
     frame_number = cap.get(cv2.CAP_PROP_POS_FRAMES)
     if frame_number == cap.get(cv2.CAP_PROP_FRAME_COUNT):
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     _, frame = cap.read()
     
     img = frame[:frame.shape[0] - 30,:,:]
+    frame_time += time.time()
+
+    prespective_time -= time.time()
     img = prespective_transform(img)
+    prespective_time += time.time()
     
+    lane_point_time -= time.time()
     points = get_lane_points(img)
+    lane_point_time += time.time()
 
-    pre_time = time.time()
+    find_cluster_time -= time.time()
     labels = find_clusters(points)
-    curves = get_lane_curves(points, labels, img.shape)
-    labels = get_ordered_labels(points, labels)
+    find_cluster_time += time.time()
 
-    fit_time = time.time()
+    get_curves_time -= time.time()
+    curves = get_lane_curves(points, labels, img.shape)
+    get_curves_time += time.time()
 
     colors = [(0,0,255), (0,255,0), (255,0,0), (255,255,0)]
-    cluster_img = np.zeros_like(img)
-    for i, p in enumerate(points):
-        if labels[i] == -1:
-            continue
-        class_index = labels[i]
-        cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
+    # cluster_img = np.zeros_like(img)
+    # for i, p in enumerate(points):
+    #     if labels[i] == -1:
+    #         continue
+    #     class_index = labels[i]
+    #     cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
     
     # for i, curve in enumerate(curves):
     #     img = draw_curve(img, curve, colors[i])
     for i in range(1, len(curves)):
+        draw_lane_time -= time.time()
         draw_lane(img, curves[i - 1], curves[i], colors[i - 1])
+        draw_lane_time += time.time()
 
-    cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
+    count += 1
+    if count >= 1000:
+        break
+
+    display_time -= time.time()
+    # cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
 
     cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
     
@@ -246,16 +254,21 @@ while True:
     elif key == ord('b') and paused:
         frame_number = cap.get(cv2.CAP_PROP_POS_FRAMES)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number - 2)
-
     
-    print(
-        "\n" * 20 + \
-        f"Preprocess time: {(pre_time - start)*1000: .2f}ms\n" + \
-        f"Clustering time: {(fit_time - pre_time)*1000: .2f}ms\n" + \
-        f"Display time: {(time.time() - fit_time)*1000: .2f}ms\n" + \
-        f"Total time: {(time.time() - start) * 1000: .2f}ms\n" + \
-        f"FPS: {int(1/(time.time() - start))}", end=""
-    )
+    display_time += time.time()
 
+print(
+    '\n' * 20 + \
+    f"Benchmark over {count} frames:\n" + \
+    f"Average FPS  = {count / (time.time() - start_time): .2f}\n" + \
+    f"Total time   = {time.time() - start_time: .2f}s\n" + \
+    f"Frame        = {frame_time: .2f}s\n" + \
+    f"Prespective  = {prespective_time: .2f}s\n" + \
+    f"lane_point   = {lane_point_time: .2f}s\n" + \
+    f"find_cluster = {find_cluster_time: .2f}s\n" + \
+    f"get_curves   = {get_curves_time: .2f}s\n" + \
+    f"draw_lane    = {draw_lane_time: .2f}s\n" + \
+    f"display      = {display_time: .2f}s"
+)
 cv2.destroyAllWindows()
 cap.release()
