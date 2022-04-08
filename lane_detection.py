@@ -72,77 +72,29 @@ def get_ordered_labels(data, labels):
 
 def filter_curves(lines, img):
     curves = []
-    for i, line in enumerate(lines):
+    for line in lines:
         # fit a straight line to the points
         params = np.polyfit(line[:, 0], line[:, 1], 1)
-        # fit a curve to the points rescaled by 1/10
-        params2 = np.polyfit(line[:, 0] / 10, line[:, 1] / 10, 2)
-        
-        # draw the curve scaled by 1/10
-        curve_img = np.zeros((img.shape[0] // 10, img.shape[1] // 10))
-        curve_img = draw_curve(curve_img, params2, 255)
-
-        # get a count of the number of pixels of the curve
-        count_before = np.sum(np.nonzero(curve_img))
-        
-        # draw the original line by connecting the points on the same scale
-        points_img = np.zeros((img.shape[0] // 10, img.shape[1] // 10))
-        points_img = draw_curve(points_img, line / 10, 255, thickness=15, point_curve=True)
-
-        # subtract the connected lines from the curve
-        curve_img = cv2.bitwise_and(cv2.bitwise_not(points_img), curve_img)
-
-        # calculate the percent of the remaining pixels from original
-        percent = np.sum(np.nonzero(curve_img)) / (count_before+1)
-        # filter curves with coverage of less than 80%
-        if percent < 0.2:
-            curves.append(params)
+        curves.append(params)
     
-    mid_lane_index = get_midlane_index(curves, img)
-    if mid_lane_index == -1:
-        # TODO: use the line nearest to previous midlane instead
-        mid_lane_index = 1
-
+    # If no curves detected ignore this frame
     if len(curves) == 0:
         return []
 
-    # Handle the case of 4 clusters at the fork
-    if len(curves) == 4:
-        if mid_lane_index == 1:
-            curves = curves[:2]
-        elif mid_lane_index == 2:
-            mid_lane_index -= 2
-            curves = curves[2:]
+    # Get the index of the middle lane line
+    mid_lane_index = get_midlane_index(curves, img)
+    # If not found ignore this frame
+    if mid_lane_index == -1:
+        return []
     
-    # Handle the case of high curve third line at the fork
-    if len(curves) == 3:
-        # Handle cases at fork when middle lane is at the edge of the frame
-        if mid_lane_index == 0:
-            curves = curves[:1]
-        elif mid_lane_index == 2:
-            curves = curves[2:]
-            mid_lane_index -= 2
-        else:
-            # calculate the angle between the three lines
-            first_slope = curves[0][0]
-            mid_slope = curves[1][0]
-            last_slope = curves[2][0]
-            first_mid_angle = np.math.atan((first_slope - mid_slope) / (1 - first_slope * mid_slope))
-            mid_last_angle = np.math.atan((mid_slope - last_slope) / (1 - mid_slope * last_slope))
-            # Ignore the third line if its slope is too different form the middle
-            if abs(first_mid_angle) > np.math.pi / 12:
-                curves = curves[1:]
-                mid_lane_index -= 1
-            elif abs(mid_last_angle) > np.math.pi / 12:
-                curves = curves[:2]
-
-    # Recreate the third line by offseting the middle line
+    # Remove all curves other than the middle one
+    curves = curves[mid_lane_index:mid_lane_index+1]
+    mid_lane_index = 0
+    
+    # Recreate the other lines by offseting the middle line
     while len(curves) < 3:
         shift = 400
-        try:
-            new_curve = np.copy(curves[mid_lane_index])
-        except:
-            return []
+        new_curve = np.copy(curves[mid_lane_index])
         if mid_lane_index == 1:
             # Shifting fixed distance prependicular to the line to the right
             new_curve[1] = shift * np.sqrt(new_curve[0] ** 2 + 1) + new_curve[1]
@@ -152,58 +104,57 @@ def filter_curves(lines, img):
             new_curve[1] = -shift * np.sqrt(new_curve[0] ** 2 + 1) + new_curve[1]
             curves.insert(0, new_curve)
             mid_lane_index += 1
-        # Handle the case of high curve third line at the fork
-        if len(curves) == 3:
-            # calculate the angle between the three lines
-            first_slope = curves[0][0]
-            mid_slope = curves[1][0]
-            last_slope = curves[2][0]
-            first_mid_angle = np.math.atan((first_slope - mid_slope) / (1 - first_slope * mid_slope))
-            mid_last_angle = np.math.atan((mid_slope - last_slope) / (1 - mid_slope * last_slope))
-            # Ignore the third line if its slope is too different form the middle
-            if abs(first_mid_angle) > np.math.pi / 12:
-                curves = curves[1:]
-                mid_lane_index -= 1
-            elif abs(mid_last_angle) > np.math.pi / 12:
-                curves = curves[:2]
 
     return curves
 
 def get_midlane_index(curves, img):
+    # Get centres of rectangular contours
     midlane_points = get_midlane_points(img)
+
+    # Count the number of points near to each curve
     curve_point_count = np.zeros((len(curves),))
     for i, curve in enumerate(curves):
         for point in midlane_points:
             distance = abs(point[0] - curve[0] * point[1] - curve[1]) / np.sqrt(1 + curve[0] ** 2)
             if distance / img.shape[0] < 0.1:
                 curve_point_count[i] += 1
+    
+    # Get the index of the curve with maximum number of points
     try:
         max_index = int(np.argmax(curve_point_count))
     except:
         max_index = -1
+
     # if max_index != -1 and curve_point_count[max_index] > 0:
     #     draw_curve(img, curves[max_index])
     # cv2.imshow("img1", cv2.resize(img, None, fx=0.5, fy=0.5))
+
+    # Return the index if it has points near to it otherwise return -1 (not found)
     return max_index if max_index != -1 and curve_point_count[max_index] > 0 else -1
 
 def get_midlane_points(img):
+    # Edge detection to find lane lines
     edges = cv2.Canny(cv2.resize(img, None, fx=0.1, fy=0.1), 200, 300)
     kernel = np.ones([3,3])
-    #edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
     edges = cv2.dilate(edges, kernel, iterations=1)
+
+    # Finding all contours in the edge image
     contours = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
 
     points = []
-    rects = []
     for i in contours:
+        # Filtering Contours by area
         area = cv2.contourArea(i)
         if area > 250 or area < 30:
             continue
+
+        # Approximating number of vertices for contours
         epsilon = 0.05*cv2.arcLength(i,True)
         approx = cv2.convexHull(i)
         approx = cv2.approxPolyDP(approx,epsilon,True)
+
+        # Filtering Contours by number of vertices
         if len(approx) >= 4:
-            rects.append(approx)
             M = cv2.moments(approx)
             points.append((int(M['m10']/M['m00']) * 10, int(M['m01']/ M['m00']) * 10))
     
@@ -293,18 +244,19 @@ while True:
     if frame_number == cap.get(cv2.CAP_PROP_FRAME_COUNT):
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     _, frame = cap.read()
-    # frame = cv2.imread("frame635.0.jpg")
+
     img = frame[:frame.shape[0] - 30,:,:]
     frame_time += time.time()
 
+    
+    cv2.imshow("imgpresp", cv2.resize(img, None, fx=0.5, fy=0.5))
     prespective_time -= time.time()
-    img = prespective_transform(img)
+    img_presp = prespective_transform(img)
+    img = img_presp
     prespective_time += time.time()
-
-    get_midlane_points(img)
     
     lane_point_time -= time.time()
-    points = get_lane_points(img)
+    points = get_lane_points(img_presp)
     lane_point_time += time.time()
 
     find_cluster_time -= time.time()
@@ -312,7 +264,7 @@ while True:
     find_cluster_time += time.time()
 
     get_curves_time -= time.time()
-    curves = get_lane_curves(points, labels, img)
+    curves = get_lane_curves(points, labels, img_presp)
     get_curves_time += time.time()
 
     colors = [(0,0,255), (0,255,0), (255,0,0), (255,255,0)]
@@ -326,6 +278,7 @@ while True:
     
     # for i, curve in enumerate(curves):
     #     img = draw_curve(img, curve, colors[i], thickness=5)
+
     for i in range(1, len(curves)):
         draw_lane_time -= time.time()
         draw_lane(img, curves[i - 1], curves[i], colors[i - 1])
@@ -339,8 +292,7 @@ while True:
     cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
 
     cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
-    # cv2.waitKey()
-    # break
+    
     if paused:
         key = cv2.waitKey()
     else:
