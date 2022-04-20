@@ -4,9 +4,12 @@ import numpy as np
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
 
+from scipy.spatial import distance_matrix
+
 import time
 
 SAMPLE_SIZE = 300
+HALF_LANE_SHIFT = 200
 
 def get_lane_points(img):
     # Resize image to deal with less data
@@ -70,6 +73,37 @@ def get_ordered_labels(data, labels):
     # return labels renumbered
     return np.array([label_to_index[label] if label != -1 else -1 for label in labels])
 
+def get_coverage(params, points, shape, n_samples=20, max_distance=None):
+    if max_distance is None:
+        max_distance = shape[0] / 20
+    
+    # Get the upper vertex of the line
+    if int(params[1]) in range(shape[1]):
+        upper_x = 0
+    elif params[1] < 0:
+        upper_x = -params[1] / params[0]
+    else:
+        upper_x = (shape[1] - params[1]) / params[0]
+    
+    # Get the lower vertex of the line
+    if int(np.polyval(params, shape[0])) in range(shape[1]):
+        lower_x = shape[0]
+    elif params[0] > 0:
+        lower_x = (shape[1] - params[1]) / params[0]
+    else:
+        lower_x = -params[1] / params[0]
+    
+    # Create sample points from the given line
+    samples = np.linspace(upper_x, lower_x, n_samples)
+    test_points = np.column_stack((samples, np.polyval(params, samples)))
+
+    # Calculate distances from the sample points to the given list of points
+    dmat = distance_matrix(test_points, points)
+    # Calculate coverage percentage by counting sample points that are
+    # near to at least one point from the given list of points
+    return np.sum(np.min(dmat, axis=1) < max_distance) / dmat.shape[0]
+
+
 def filter_curves(lines, img):
     curves = []
     for line in lines:
@@ -86,25 +120,39 @@ def filter_curves(lines, img):
     # If not found ignore this frame
     if mid_lane_index == -1:
         return []
+
+    exit_curve = None
+    for i in range(len(curves)):
+        # Don't compare middle line to itself
+        if i == mid_lane_index:
+            continue
+        # Calculate the angle between the curve and middle curve
+        slope = curves[i][0]
+        mid_slope = curves[mid_lane_index][0]
+        angle = np.math.atan2(slope - mid_slope, 1 + slope * mid_slope)
+        # Lines to the right of the middle curve have the opposite angle
+        shift = HALF_LANE_SHIFT
+        if i > mid_lane_index:
+            angle = -angle
+            shift = -shift
+        # Check for the correct angle range and coverage
+        if angle > np.math.pi / 6 and \
+            angle < np.math.pi / 2.5 and \
+                get_coverage(curves[i], lines[i], img.shape) >= 0.7:
+            exit_curve = shift_line(curves[i], shift)
+            break
     
     # Remove all curves other than the middle one
-    curves = curves[mid_lane_index:mid_lane_index+1]
-    mid_lane_index = 0
+    mid_curve = np.copy(curves[mid_lane_index])
+    # Generate the lane curves by shifting the middle line
+    curves = [
+        shift_line(curves[mid_lane_index], -HALF_LANE_SHIFT),
+        shift_line(curves[mid_lane_index], HALF_LANE_SHIFT)
+    ]
     
-    # Recreate the other lines by offseting the middle line
-    while len(curves) < 3:
-        shift = 400
-        new_curve = np.copy(curves[mid_lane_index])
-        if mid_lane_index == 1:
-            # Shifting fixed distance prependicular to the line to the right
-            new_curve[1] = shift * np.sqrt(new_curve[0] ** 2 + 1) + new_curve[1]
-            curves.append(new_curve)
-        else:
-            # Shifting fixed distance prependicular to the line to the left
-            new_curve[1] = -shift * np.sqrt(new_curve[0] ** 2 + 1) + new_curve[1]
-            curves.insert(0, new_curve)
-            mid_lane_index += 1
-
+    # If there is an exit curve add it at the end
+    if exit_curve is not None:
+        curves.append(exit_curve)
     return curves
 
 def get_midlane_index(curves, img):
@@ -158,14 +206,18 @@ def get_midlane_points(img):
             M = cv2.moments(approx)
             points.append((int(M['m10']/M['m00']) * 10, int(M['m01']/ M['m00']) * 10))
     
-    # for i, rect in enumerate(rects):
-    #     cv2.fillPoly(img, [rect * 10], color=(0, 255, 0))
-    #     cv2.circle(img, points[i], 10, (0,0,255), -1)
+    # for point in points:
+    #     cv2.circle(img, point, 10, (0,0,255), -1)
     
     # cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
     # cv2.imshow("edges", cv2.resize(edges, None, fx=5, fy=5))
 
     return points
+
+def shift_line(line, shift):
+    new_curve = np.copy(line)
+    new_curve[1] = shift * np.sqrt(new_curve[0] ** 2 + 1) + new_curve[1]
+    return new_curve
 
 def draw_curve(img, curve, color=(0,0,255), thickness=3, point_curve=False):
     if point_curve:
@@ -182,32 +234,38 @@ def draw_curve(img, curve, color=(0,0,255), thickness=3, point_curve=False):
         cv2.line(img, (y[i], x[i]), (y[i - 1], x[i - 1]), color=color, thickness=thickness)
     return img
 
-def draw_lane(img, curve1, curve2, color=(255, 255, 0)):
+def draw_lane(img, curve1, curve2, color):
     x = np.array([i for i in range(0, img.shape[0], 10)], dtype=np.int)
     y1 = np.polyval(curve1, x).astype(np.int)
     y2 = np.polyval(curve2, x).astype(np.int)
     points = np.row_stack((np.column_stack((y1, x)), np.column_stack((y2, x))[::-1]))
     cv2.fillPoly(img, [points], color=color)
 
+def draw_lane_from_curve(img, curve, shift, color):
+    curve1 = shift_line(curve, -shift)
+    curve2 = shift_line(curve, shift)
+    draw_lane(img, curve1, curve2, color)
+
 def prespective_transform(img, inverse=False):
-    pts1 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
-                       [110, img.shape[0] // 4], [img.shape[1] - 110, img.shape[0] // 4]])
-    pts2 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
-                       [0, 0], [img.shape[1], 0]])
+    presp_pts1 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
+                    [110, img.shape[0] // 4], [img.shape[1] - 110, img.shape[0] // 4]])
+    
+    presp_pts2 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
+                    [0, 0], [img.shape[1], 0]])
     
     # result = img
-    # for pt in pts1:
+    # for pt in presp_pts1:
     #     cv2.circle(result, (pt[0], pt[1]), 5, (0, 255, 255), thickness=-1)
 
     if inverse:
-        matrix = cv2.getPerspectiveTransform(pts2, pts1)
+        presp_mat = cv2.getPerspectiveTransform(presp_pts2, presp_pts1)
     else:
-        matrix = cv2.getPerspectiveTransform(pts1, pts2)
+        presp_mat = cv2.getPerspectiveTransform(presp_pts1, presp_pts2)
 
     # Apply prespective transform and fill background with grey pixels
-    grey_img = np.zeros_like(img)
-    grey_img[:,:,:] = 100
-    result = cv2.warpPerspective(img, matrix, (img.shape[1], img.shape[0]), grey_img, borderMode=cv2.BORDER_TRANSPARENT)
+    presp_grey_img = np.zeros_like(img)
+    presp_grey_img[:] = 100
+    result = cv2.warpPerspective(img, presp_mat, (img.shape[1], img.shape[0]), presp_grey_img, borderMode=cv2.BORDER_TRANSPARENT)
     return result
 
 def print_benchmark():    
@@ -248,11 +306,8 @@ while True:
     img = frame[:frame.shape[0] - 30,:,:]
     frame_time += time.time()
 
-    
-    cv2.imshow("imgpresp", cv2.resize(img, None, fx=0.5, fy=0.5))
     prespective_time -= time.time()
     img_presp = prespective_transform(img)
-    img = img_presp
     prespective_time += time.time()
     
     lane_point_time -= time.time()
@@ -268,20 +323,24 @@ while True:
     get_curves_time += time.time()
 
     colors = [(0,0,255), (0,255,0), (255,0,0), (255,255,0)]
-    cluster_img = np.zeros_like(img)
-    labels = get_ordered_labels(points, labels)
-    for i, p in enumerate(points):
-        if labels[i] == -1:
-            continue
-        class_index = labels[i]
-        cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
+    # cluster_img = np.zeros_like(img)
+    # labels = get_ordered_labels(points, labels)
+    # for i, p in enumerate(points):
+    #     if labels[i] == -1:
+    #         continue
+    #     class_index = labels[i]
+    #     cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
     
     # for i, curve in enumerate(curves):
     #     img = draw_curve(img, curve, colors[i], thickness=5)
 
-    for i in range(1, len(curves)):
+    lanes_img = np.zeros_like(img)
+    lanes_mask = np.zeros(img.shape[:-1])
+    for i in range(len(curves)):
         draw_lane_time -= time.time()
-        draw_lane(img, curves[i - 1], curves[i], colors[i - 1])
+        draw_lane_from_curve(img_presp, curves[i], HALF_LANE_SHIFT, colors[i])
+        draw_lane_from_curve(lanes_img, curves[i], HALF_LANE_SHIFT, colors[i])
+        draw_lane_from_curve(lanes_mask, curves[i], HALF_LANE_SHIFT, 255)
         draw_lane_time += time.time()
 
     count += 1
@@ -289,9 +348,16 @@ while True:
         print_benchmark()
 
     display_time -= time.time()
-    cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
+    # cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
 
+    lanes_img = prespective_transform(lanes_img, True)
+    lanes_mask = cv2.cvtColor(cv2.inRange(prespective_transform(lanes_mask, True), 150, 255), cv2.COLOR_GRAY2BGR)
+    img = cv2.add(
+        cv2.bitwise_and(img, cv2.bitwise_not(lanes_mask)),
+        cv2.bitwise_and(lanes_img, lanes_mask)
+    )
     cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
+    cv2.imshow("imgpresp", cv2.resize(img_presp, None, fx=0.5, fy=0.5))
     
     if paused:
         key = cv2.waitKey()
