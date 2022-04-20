@@ -21,7 +21,7 @@ def get_lane_points(img):
     edges = cv2.dilate(edges, kernel, iterations=1)
     
     # cv2.imshow("edges_dilation", edges)
-    #edges = cv2.erode(edges, kernel, iterations=8)
+    # edges = cv2.erode(edges, kernel, iterations=8)
 
     # Extract sample points and rescale
     points = np.argwhere(edges[:,:] > 128)
@@ -53,43 +53,38 @@ def get_ordered_labels(data, labels):
     cluster_count = len(set(labels)) - (1 if -1 in labels else 0)
 
     # Calculate centre-point of each cluster
-    centres = np.zeros((cluster_count,), dtype=np.float)
-    counts = np.zeros((cluster_count,), dtype=np.float)
-    for i, (x, y) in enumerate(data):
-        if labels[i] == -1:
-            continue
-        centres[labels[i]] += y
-        counts[labels[i]] += 1
-
-    for i in range(cluster_count):
-        centres[i] /= counts[i]
+    centres = np.array([np.sum(data[np.where(labels == i), 1]) / np.sum(np.where(labels == i)) for i in range(cluster_count)])
     
-    # Sort clusters in ascending order of the center value
-    label_to_index = np.zeros((cluster_count,), dtype=np.int)
-    indices = np.argwhere(np.ones_like(centres))
-    for a, (c, i) in enumerate(sorted(zip(centres, indices))):
-        label_to_index[i] = a
+    # Sort centres ascendingly and get mapping from old labels to new labels
+    label_to_index = np.argsort(np.argsort(centres))
 
-    # return labels renumbered
-    return np.array([label_to_index[label] if label != -1 else -1 for label in labels])
+    # return labels renumbered (ignore -1 labels)
+    labels[labels != -1] = label_to_index[labels[labels != -1]]
+    return labels
 
 def get_coverage(params, points, shape, n_samples=20, max_distance=None):
     if max_distance is None:
         max_distance = shape[0] / 20
     
     # Get the upper vertex of the line
+    # If upper vertex intersects upper border
     if int(params[1]) in range(shape[1]):
         upper_x = 0
+    # If upper vertex intersects left border
     elif params[1] < 0:
         upper_x = -params[1] / params[0]
+    # If upper vertex intersects right border
     else:
         upper_x = (shape[1] - params[1]) / params[0]
     
     # Get the lower vertex of the line
+    # If lower vertex intersects lower border
     if int(np.polyval(params, shape[0])) in range(shape[1]):
         lower_x = shape[0]
+    # If lower vertex intersects left border
     elif params[0] > 0:
         lower_x = (shape[1] - params[1]) / params[0]
+    # If lower vertex intersects right border
     else:
         lower_x = -params[1] / params[0]
     
@@ -248,7 +243,7 @@ def draw_lane_from_curve(img, curve, shift, color):
 
 def prespective_transform(img, inverse=False):
     presp_pts1 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
-                    [110, img.shape[0] // 4], [img.shape[1] - 110, img.shape[0] // 4]])
+                    [img.shape[1] // 12, img.shape[0] // 4], [11 * img.shape[1] // 12, img.shape[0] // 4]])
     
     presp_pts2 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
                     [0, 0], [img.shape[1], 0]])
@@ -264,7 +259,7 @@ def prespective_transform(img, inverse=False):
 
     # Apply prespective transform and fill background with grey pixels
     presp_grey_img = np.zeros_like(img)
-    presp_grey_img[:] = 100
+    presp_grey_img[:] = 90
     result = cv2.warpPerspective(img, presp_mat, (img.shape[1], img.shape[0]), presp_grey_img, borderMode=cv2.BORDER_TRANSPARENT)
     return result
 
@@ -323,13 +318,13 @@ while True:
     get_curves_time += time.time()
 
     colors = [(0,0,255), (0,255,0), (255,0,0), (255,255,0)]
-    # cluster_img = np.zeros_like(img)
-    # labels = get_ordered_labels(points, labels)
-    # for i, p in enumerate(points):
-    #     if labels[i] == -1:
-    #         continue
-    #     class_index = labels[i]
-    #     cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
+    cluster_img = np.zeros_like(img)
+    labels = get_ordered_labels(points, labels)
+    for i, p in enumerate(points):
+        if labels[i] == -1:
+            continue
+        class_index = labels[i]
+        cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
     
     # for i, curve in enumerate(curves):
     #     img = draw_curve(img, curve, colors[i], thickness=5)
@@ -339,8 +334,8 @@ while True:
     for i in range(len(curves)):
         draw_lane_time -= time.time()
         draw_lane_from_curve(img_presp, curves[i], HALF_LANE_SHIFT, colors[i])
-        draw_lane_from_curve(lanes_img, curves[i], HALF_LANE_SHIFT, colors[i])
-        draw_lane_from_curve(lanes_mask, curves[i], HALF_LANE_SHIFT, 255)
+        # draw_lane_from_curve(lanes_img, curves[i], HALF_LANE_SHIFT, colors[i])
+        # draw_lane_from_curve(lanes_mask, curves[i], HALF_LANE_SHIFT, 255)
         draw_lane_time += time.time()
 
     count += 1
@@ -348,15 +343,15 @@ while True:
         print_benchmark()
 
     display_time -= time.time()
-    # cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
+    cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
 
-    lanes_img = prespective_transform(lanes_img, True)
-    lanes_mask = cv2.cvtColor(cv2.inRange(prespective_transform(lanes_mask, True), 150, 255), cv2.COLOR_GRAY2BGR)
-    img = cv2.add(
-        cv2.bitwise_and(img, cv2.bitwise_not(lanes_mask)),
-        cv2.bitwise_and(lanes_img, lanes_mask)
-    )
-    cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
+    # lanes_img = prespective_transform(lanes_img, True)
+    # lanes_mask = cv2.cvtColor(cv2.inRange(prespective_transform(lanes_mask, True), 150, 255), cv2.COLOR_GRAY2BGR)
+    # img = cv2.add(
+    #     cv2.bitwise_and(img, cv2.bitwise_not(lanes_mask)),
+    #     cv2.bitwise_and(lanes_img, lanes_mask)
+    # )
+    # cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
     cv2.imshow("imgpresp", cv2.resize(img_presp, None, fx=0.5, fy=0.5))
     
     if paused:
