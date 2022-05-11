@@ -8,19 +8,19 @@ from scipy.spatial import distance_matrix
 
 import time
 
-SAMPLE_SIZE = 300
-HALF_LANE_SHIFT = 200
+SAMPLE_SIZE = 150
+HALF_LANE_SHIFT = 100
 
 def get_lane_points(img):
     # Resize image to deal with less data
-    img = cv2.resize(img, None, fx=0.1, fy=0.1)
+    img = cv2.resize(img, None, fx=0.2, fy=0.2)
     # Find lane edges
-    edges = cv2.Canny(img, 200, 300)
+    edges = cv2.Canny(img, 250, 300)
     # cv2.imshow("edges", edges)
     kernel = np.ones([6,1])
     edges = cv2.dilate(edges, kernel, iterations=1)
     
-    # cv2.imshow("edges_dilation", edges)
+    # cv2.imshow("edges_dilation", cv2.resize(edges, None, fx=2, fy=2))
     # edges = cv2.erode(edges, kernel, iterations=8)
 
     # Extract sample points and rescale
@@ -28,7 +28,7 @@ def get_lane_points(img):
     points = points[np.random.choice(
         len(points), size=min(SAMPLE_SIZE,len(points)-1), replace=False
     )]
-    points = points * 10
+    points = points * 5
     return points
 
 def find_clusters(points):
@@ -105,13 +105,13 @@ def filter_curves(lines, img):
         # fit a straight line to the points
         params = np.polyfit(line[:, 0], line[:, 1], 1)
         curves.append(params)
-    
     # If no curves detected ignore this frame
     if len(curves) == 0:
         return []
 
     # Get the index of the middle lane line
     mid_lane_index = get_midlane_index(curves, img)
+    
     # If not found ignore this frame
     if mid_lane_index == -1:
         return []
@@ -137,8 +137,6 @@ def filter_curves(lines, img):
             exit_curve = shift_line(curves[i], shift)
             break
     
-    # Remove all curves other than the middle one
-    mid_curve = np.copy(curves[mid_lane_index])
     # Generate the lane curves by shifting the middle line
     curves = [
         shift_line(curves[mid_lane_index], -HALF_LANE_SHIFT),
@@ -177,7 +175,7 @@ def get_midlane_index(curves, img):
 
 def get_midlane_points(img):
     # Edge detection to find lane lines
-    edges = cv2.Canny(cv2.resize(img, None, fx=0.1, fy=0.1), 200, 300)
+    edges = cv2.Canny(cv2.resize(img, None, fx=0.2, fy=0.2), 200, 300)
     kernel = np.ones([3,3])
     edges = cv2.dilate(edges, kernel, iterations=1)
 
@@ -199,7 +197,7 @@ def get_midlane_points(img):
         # Filtering Contours by number of vertices
         if len(approx) >= 4:
             M = cv2.moments(approx)
-            points.append((int(M['m10']/M['m00']) * 10, int(M['m01']/ M['m00']) * 10))
+            points.append((int(M['m10']/M['m00']) * 5, int(M['m01']/ M['m00']) * 5))
     
     # for point in points:
     #     cv2.circle(img, point, 10, (0,0,255), -1)
@@ -241,7 +239,7 @@ def draw_lane_from_curve(img, curve, shift, color):
     curve2 = shift_line(curve, shift)
     draw_lane(img, curve1, curve2, color)
 
-def prespective_transform(img, inverse=False):
+def prespective_transform(img, inverse=False, border_value=(90,90,90)):
     presp_pts1 = np.float32([[0, img.shape[0] // 2], [img.shape[1], img.shape[0] // 2],
                     [img.shape[1] // 12, img.shape[0] // 4], [11 * img.shape[1] // 12, img.shape[0] // 4]])
     
@@ -251,6 +249,7 @@ def prespective_transform(img, inverse=False):
     # result = img
     # for pt in presp_pts1:
     #     cv2.circle(result, (pt[0], pt[1]), 5, (0, 255, 255), thickness=-1)
+    # cv2.fillPoly(img, [np.array([presp_pts1[0], presp_pts1[1], presp_pts1[3], presp_pts1[2]], dtype=int)], color=(0,255,255))
 
     if inverse:
         presp_mat = cv2.getPerspectiveTransform(presp_pts2, presp_pts1)
@@ -258,9 +257,7 @@ def prespective_transform(img, inverse=False):
         presp_mat = cv2.getPerspectiveTransform(presp_pts1, presp_pts2)
 
     # Apply prespective transform and fill background with grey pixels
-    presp_grey_img = np.zeros_like(img)
-    presp_grey_img[:] = 90
-    result = cv2.warpPerspective(img, presp_mat, (img.shape[1], img.shape[0]), presp_grey_img, borderMode=cv2.BORDER_TRANSPARENT)
+    result = cv2.warpPerspective(img, presp_mat, (img.shape[1], img.shape[0]), borderMode=cv2.BORDER_CONSTANT, borderValue=border_value)
     return result
 
 def print_benchmark():    
@@ -298,7 +295,7 @@ while True:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     _, frame = cap.read()
 
-    img = frame[:frame.shape[0] - 30,:,:]
+    img = cv2.resize(frame[:frame.shape[0] - 30,:,:], None, fx=0.5, fy=0.5)
     frame_time += time.time()
 
     prespective_time -= time.time()
@@ -315,35 +312,40 @@ while True:
 
     get_curves_time -= time.time()
     curves = get_lane_curves(points, labels, img_presp)
+    # if len(curves) == 0:
+    #     points = get_lane_points(img)
+    #     labels = find_clusters(points)
+    #     curves = get_lane_curves(points, labels, img)
+        #print("Using full image")
     get_curves_time += time.time()
 
     colors = [(0,0,255), (0,255,0), (255,0,0), (255,255,0)]
-    cluster_img = np.zeros_like(img)
-    labels = get_ordered_labels(points, labels)
-    for i, p in enumerate(points):
-        if labels[i] == -1:
-            continue
-        class_index = labels[i]
-        cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
+    # cluster_img = np.zeros_like(img)
+    # labels = get_ordered_labels(points, labels)
+    # for i, p in enumerate(points):
+    #     if labels[i] == -1:
+    #         continue
+    #     class_index = labels[i]
+    #     cv2.circle(cluster_img, (int(p[1]), int(p[0])), 8, colors[class_index % 4], -1)
     
     # for i, curve in enumerate(curves):
     #     img = draw_curve(img, curve, colors[i], thickness=5)
 
-    lanes_img = np.zeros_like(img)
-    lanes_mask = np.zeros(img.shape[:-1])
+    # lanes_img = np.zeros_like(img)
+    # lanes_mask = np.zeros(img.shape[:-1])
     for i in range(len(curves)):
         draw_lane_time -= time.time()
         draw_lane_from_curve(img_presp, curves[i], HALF_LANE_SHIFT, colors[i])
         # draw_lane_from_curve(lanes_img, curves[i], HALF_LANE_SHIFT, colors[i])
-        # draw_lane_from_curve(lanes_mask, curves[i], HALF_LANE_SHIFT, 255)
+        # draw_lane_from_curve(lanes_mask, curves[i], HALF_LANE_SHIFT, 255, border_value=90)
         draw_lane_time += time.time()
 
     count += 1
-    if count == 1000:
+    if count == 2000:
         print_benchmark()
 
     display_time -= time.time()
-    cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=0.5, fy=0.5))
+    # cv2.imshow("clusters", cv2.resize(cluster_img, None, fx=1, fy=1))
 
     # lanes_img = prespective_transform(lanes_img, True)
     # lanes_mask = cv2.cvtColor(cv2.inRange(prespective_transform(lanes_mask, True), 150, 255), cv2.COLOR_GRAY2BGR)
@@ -352,8 +354,9 @@ while True:
     #     cv2.bitwise_and(lanes_img, lanes_mask)
     # )
     # cv2.imshow("img", cv2.resize(img, None, fx=0.5, fy=0.5))
-    cv2.imshow("imgpresp", cv2.resize(img_presp, None, fx=0.5, fy=0.5))
-    
+    cv2.imshow("imgpresp", cv2.resize(img_presp, None, fx=1, fy=1))
+    # cv2.imshow("frame", cv2.resize(img, None, fx=1, fy=1))
+
     if paused:
         key = cv2.waitKey()
     else:
