@@ -8,6 +8,8 @@ from scipy.spatial import distance_matrix
 
 import time
 
+DISPLAY = False
+
 SAMPLE_SIZE = 150
 DBSCAN_EPSILON = 0.7
 HALF_LANE_SHIFT = 125
@@ -18,7 +20,7 @@ MAX_CONTOUR_AREA = 250
 MIN_CONTOUR_AREA = 30
 PRESPECTIVE_BGCOLOR = (90, 90, 90)
 CROP_START_Y = 20
-CROP_END_Y = 110
+CROP_END_Y = 120
 CROP_START_X = 40
 CROP_END_X = 40
 
@@ -32,7 +34,8 @@ def get_lane_points(img):
     img = prepare_for_canny(img)
     # Find lane edges
     edges = cv2.Canny(img, CANNY_THRESH_LOW, CANNY_THRESH_HIGH)
-    cv2.imshow("edges", cv2.resize(edges, None, fx=5, fy=5))
+    if DISPLAY:
+        cv2.imshow("edges", cv2.resize(edges, None, fx=5, fy=5))
     kernel = np.ones([6,1])
     edges = cv2.dilate(edges, kernel, iterations=1)
     
@@ -352,8 +355,9 @@ def main():
         img = detection["image"]
         img_presp = detection["image_prespective"]
 
-        cv2.imshow("img", img)
-        cv2.imshow("imgpresp", img_presp)
+        if DISPLAY:
+            cv2.imshow("img", img)
+            cv2.imshow("imgpresp", img_presp)
 
         if paused:
             key = cv2.waitKey()
